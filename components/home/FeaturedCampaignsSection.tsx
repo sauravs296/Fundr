@@ -1,11 +1,20 @@
 import Image from "next/image";
+import Link from "next/link";
 import { featuredCampaigns } from "@/lib/constants/home";
 
 export function FeaturedCampaignsSection() {
   return (
     <section className="border-y border-[var(--line)] bg-[var(--surface-soft)] py-16">
       <div className="mx-auto w-full max-w-6xl px-4 md:px-8">
-        <h2 className="text-center text-4xl font-bold reveal-up">Initiate your fundraising campaign today</h2>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h2 className="text-4xl font-bold reveal-up">Featured Campaigns</h2>
+          <Link
+            href="/campaigns"
+            className="rounded-full border border-[var(--brand)] px-4 py-2 text-sm font-semibold text-[var(--brand)] transition hover:bg-[var(--brand)] hover:text-white"
+          >
+            Show More
+          </Link>
+        </div>
 
         <div className="mt-10 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
           {featuredCampaigns.map((campaign, index) => (
@@ -36,9 +45,12 @@ export function FeaturedCampaignsSection() {
                     <p className="text-[var(--muted)]">{campaign.progress} funded</p>
                   </div>
                 </div>
-                <button className="w-full rounded-full border border-[var(--brand)] py-2 text-sm font-semibold text-[var(--brand)] transition hover:bg-[var(--brand)] hover:text-white">
-                  Donate
-                </button>
+                <Link
+                  href={`/fund?campaign=${encodeURIComponent(campaign.title)}`}
+                  className="block w-full rounded-full border border-[var(--brand)] py-2 text-center text-sm font-semibold text-[var(--brand)] transition hover:bg-[var(--brand)] hover:text-white"
+                >
+                  Fund
+                </Link>
               </div>
             </article>
           ))}

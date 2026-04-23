@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import { heroConfig } from "@/lib/constants/home";
 
 export function HeroSection() {
@@ -17,22 +18,36 @@ export function HeroSection() {
           </p>
         </div>
 
-        <div className="mt-10 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-3 shadow-sm reveal-zoom delay-200 md:p-4">
-          <div className="grid gap-2 md:grid-cols-[1.15fr_1fr_1fr_auto]">
-            <select className="rounded-xl border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-3 text-sm outline-none">
-              <option>Make a one-time donation</option>
-            </select>
-            <input
-              type="number"
-              placeholder="Donation amount"
-              className="rounded-xl border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-3 text-sm outline-none"
-            />
-            <select className="rounded-xl border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-3 text-sm outline-none">
-              <option>Donate for a cause</option>
-            </select>
-            <button className="rounded-xl bg-[var(--brand)] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[var(--brand-strong)]">
-              Donate
-            </button>
+        <div className="mt-10 grid gap-4 md:grid-cols-[1.3fr_1fr]">
+          <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5 shadow-sm reveal-zoom delay-200 md:p-6">
+            <p className="text-sm font-semibold text-[var(--brand)]">Choose your path</p>
+            <h2 className="mt-2 text-2xl font-bold">Fund a cause or launch your own campaign</h2>
+            <p className="mt-3 text-sm text-[var(--muted)]">
+              Use the public Fund flow to support an existing campaign, or go to the creator portal to start a new one.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link
+                href="/fund"
+                className="rounded-full bg-[var(--brand)] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[var(--brand-strong)]"
+              >
+                Fund
+              </Link>
+              <Link
+                href="/fundraising"
+                className="rounded-full border border-[var(--brand)] px-5 py-3 text-sm font-semibold text-[var(--brand)] transition hover:bg-[var(--brand)] hover:text-white"
+              >
+                Start a Campaign
+              </Link>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface-soft)] p-5 reveal-zoom delay-300">
+            <p className="text-sm font-semibold">Donation basics</p>
+            <ul className="mt-3 space-y-2 text-sm text-[var(--muted)]">
+              <li>Anonymous support available</li>
+              <li>Name and email required if not anonymous</li>
+              <li>Minimum fund amount: 1 XLM</li>
+            </ul>
           </div>
         </div>
 
