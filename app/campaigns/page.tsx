@@ -1,0 +1,228 @@
+import Image from "next/image";
+import Link from "next/link";
+import { createClient } from "@/lib/supabase/server";
+
+export default async function CampaignsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const category = typeof params.category === "string" ? params.category : "";
+  const sort = typeof params.sort === "string" ? params.sort : "newest";
+  const search = typeof params.search === "string" ? params.search : "";
+
+  const supabase = await createClient();
+
+  let query = supabase
+    .from("campaigns")
+    .select(
+      `
+      id,
+      title,
+      slug,
+      short_description,
+      image_url,
+      category,
+      goal_xlm,
+      deadline,
+      status
+    `,
+      { count: "exact" }
+    )
+    .eq("status", "active");
+
+  if (category) {
+    query = query.eq("category", category);
+  }
+
+  if (search) {
+    query = query.ilike("title", `%${search}%`);
+  }
+
+  if (sort === "newest") {
+    query = query.order("created_at", { ascending: false });
+  } else if (sort === "ending-soon") {
+    query = query.order("deadline", { ascending: true });
+  } else if (sort === "most-funded") {
+    query = query.order("goal_xlm", { ascending: false });
+  }
+
+  const { data: campaigns = [], count = 0, error } = await query.limit(20);
+
+  // Fetch contributions for progress calculation
+  const campaignIds = campaigns.map((c) => c.id);
+  const { data: contributions = [] } = campaignIds.length
+    ? await supabase
+        .from("contributions")
+        .select("campaign_id, amount_xlm")
+        .in("campaign_id", campaignIds)
+        .eq("status", "confirmed")
+    : { data: [] };
+
+  const raisedByCampaign = contributions.reduce<Record<string, number>>((acc, c) => {
+    acc[c.campaign_id] = (acc[c.campaign_id] ?? 0) + Number(c.amount_xlm);
+    return acc;
+  }, {});
+
+  const categories = ["technology", "art", "education", "environment", "health", "community"];
+
+  return (
+    <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)]">
+      <div className="mx-auto w-full max-w-6xl px-4 py-12 md:px-8">
+        {/* Header */}
+        <section className="mb-12 space-y-4">
+          <h1 className="text-4xl font-bold">Active Campaigns</h1>
+          <p className="max-w-2xl text-sm text-[var(--muted)]">
+            Discover and support fundraising campaigns happening right now.
+          </p>
+        </section>
+
+        {/* Filters and Search */}
+        <section className="mb-8 space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-6">
+          <div className="grid gap-4 md:grid-cols-3">
+            {/* Search */}
+            <div>
+              <label className="block text-sm font-medium mb-2">Search campaigns</label>
+              <form method="get" className="flex gap-2">
+                <input
+                  type="text"
+                  name="search"
+                  defaultValue={search}
+                  placeholder="Search by title..."
+                  className="flex-1 rounded-xl border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-2 text-sm outline-none"
+                />
+                <button
+                  type="submit"
+                  className="rounded-xl bg-[var(--brand)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--brand-strong)]"
+                >
+                  Search
+                </button>
+              </form>
+            </div>
+
+            {/* Category Filter */}
+            <div>
+              <label className="block text-sm font-medium mb-2">Category</label>
+              <form method="get">
+                <select
+                  name="category"
+                  defaultValue={category}
+                  onChange={(e) => e.currentTarget.form?.submit()}
+                  className="w-full rounded-xl border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-2 text-sm outline-none"
+                >
+                  <option value="">All categories</option>
+                  {categories.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </form>
+            </div>
+
+            {/* Sort */}
+            <div>
+              <label className="block text-sm font-medium mb-2">Sort by</label>
+              <form method="get">
+                <select
+                  name="sort"
+                  defaultValue={sort}
+                  onChange={(e) => e.currentTarget.form?.submit()}
+                  className="w-full rounded-xl border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-2 text-sm outline-none"
+                >
+                  <option value="newest">Newest first</option>
+                  <option value="ending-soon">Ending soon</option>
+                  <option value="most-funded">Most funded</option>
+                </select>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        {/* Campaigns Grid */}
+        {error ? (
+          <div className="rounded-2xl border border-red-300 bg-red-50 p-6 text-center text-red-700">
+            <p className="font-semibold">Error loading campaigns</p>
+            <p className="mt-1 text-sm">{error.message}</p>
+          </div>
+        ) : campaigns.length === 0 ? (
+          <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-12 text-center">
+            <p className="text-lg font-semibold">No campaigns found</p>
+            <p className="mt-2 text-sm text-[var(--muted)]">Try adjusting your filters or search query.</p>
+          </div>
+        ) : (
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {campaigns.map((campaign) => {
+              const raised = raisedByCampaign[campaign.id] ?? 0;
+              const progress = Math.min((raised / Number(campaign.goal_xlm)) * 100, 100);
+              const daysLeft = Math.ceil(
+                (new Date(campaign.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+              );
+
+              return (
+                <Link
+                  key={campaign.id}
+                  href={`/campaigns/${campaign.slug}`}
+                  className="group overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--surface)] transition hover:border-[var(--brand)]"
+                >
+                  {/* Image */}
+                  <div className="relative h-40 w-full overflow-hidden bg-[var(--surface-soft)]">
+                    {campaign.image_url ? (
+                      <Image
+                        src={campaign.image_url}
+                        alt={campaign.title}
+                        fill
+                        className="object-cover transition group-hover:scale-105"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-[var(--muted)]">
+                        No image
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Content */}
+                  <div className="space-y-3 p-4">
+                    <div>
+                      <p className="text-xs font-semibold text-[var(--brand)]">
+                        {campaign.category.toUpperCase()}
+                      </p>
+                      <h3 className="line-clamp-2 font-semibold">{campaign.title}</h3>
+                    </div>
+
+                    <p className="line-clamp-2 text-xs text-[var(--muted)]">{campaign.short_description}</p>
+
+                    {/* Progress */}
+                    <div className="space-y-2">
+                      <div className="h-2 w-full rounded-full bg-[var(--brand-soft)]">
+                        <div
+                          className="h-2 rounded-full bg-[var(--brand)]"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <p className="font-semibold">{raised.toFixed(2)} XLM</p>
+                        <p className="text-[var(--muted)]">{progress.toFixed(0)}% of {campaign.goal_xlm} XLM</p>
+                      </div>
+                    </div>
+
+                    {/* Days Left */}
+                    <div className="text-xs text-[var(--muted)]">
+                      {daysLeft > 0 ? `${daysLeft} days left` : "Campaign ended"}
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Pagination or results count */}
+        <div className="mt-8 text-center text-sm text-[var(--muted)]">
+          Showing {campaigns.length} of {count} campaigns
+        </div>
+      </div>
+    </div>
+  );
+}

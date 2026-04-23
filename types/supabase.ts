@@ -7,6 +7,7 @@ export interface ProfileRow {
   full_name: string | null;
   avatar_url: string | null;
   bio: string | null;
+  website_url: string | null;
   role: UserRole;
   is_verified: boolean;
   total_raised_xlm: number;
