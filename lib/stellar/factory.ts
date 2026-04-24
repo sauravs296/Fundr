@@ -9,13 +9,12 @@ import {
   Address,
   Contract,
   Keypair,
-  Networks,
   TransactionBuilder,
   nativeToScVal,
   scValToNative,
   rpc,
-  xdr,
 } from "@stellar/stellar-sdk";
+import { getRpcServer, getNetworkPassphrase, waitForSorobanTx } from "@/lib/stellar/soroban";
 
 /**
  * Input for registering a campaign on-chain via the CrowdfundFactory contract.
@@ -40,67 +39,18 @@ export interface OnChainCampaignResult {
   mode: "live";
 }
 
-function getNetworkPassphrase(network: string): string {
-  return network === "PUBLIC" ? Networks.PUBLIC : Networks.TESTNET;
-}
 
-async function waitForTransaction(
-  server: rpc.Server,
-  txHash: string,
-  maxTries = 30,
-): Promise<any> {
-  const rpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL!;
-  for (let attempt = 0; attempt < maxTries; attempt += 1) {
-    // We use a raw fetch here because stellar-sdk v13 sometimes throws "Bad union switch: 4"
-    // when trying to parse TXMETA_V3 in the resultMetaXdr field of a successful transaction.
-    const res = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getTransaction",
-        params: { hash: txHash }
-      }),
-    });
-    
-    if (!res.ok) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
-    
-    const data = await res.json();
-    const status = data?.result?.status;
-
-    if (status === "SUCCESS") {
-      return data.result;
-    }
-
-    if (status === "FAILED") {
-      throw new Error(`Soroban transaction failed on-chain (hash: ${txHash})`);
-    }
-
-    // NOT_FOUND or other statuses -> wait and retry
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-
-  throw new Error(
-    `Soroban transaction confirmation timed out after ${maxTries} attempts (hash: ${txHash})`,
-  );
-}
 
 async function invokeFactoryCreate(
   input: CreateOnChainCampaignInput,
 ): Promise<OnChainCampaignResult> {
-  const rpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL;
   const factoryContractId = process.env.NEXT_PUBLIC_FACTORY_CONTRACT_ID;
   const factorySecret = process.env.STELLAR_FACTORY_SECRET_KEY;
-  const network = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "TESTNET").toUpperCase();
 
-  if (!rpcUrl || !factoryContractId || !factorySecret) {
+  if (!factoryContractId || !factorySecret) {
     throw new Error(
       "Missing Soroban env vars. Required: " +
-        "NEXT_PUBLIC_SOROBAN_RPC_URL, NEXT_PUBLIC_FACTORY_CONTRACT_ID, STELLAR_FACTORY_SECRET_KEY",
+        "NEXT_PUBLIC_FACTORY_CONTRACT_ID, STELLAR_FACTORY_SECRET_KEY",
     );
   }
 
@@ -111,32 +61,32 @@ async function invokeFactoryCreate(
     );
   }
 
-  // rpc.Server is the v13 equivalent of SorobanRpc.Server
-  const server = new rpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith("http://") });
+  // Use shared helpers — Contract class-based pattern throughout
+  const server = getRpcServer();
+  const networkPassphrase = getNetworkPassphrase();
   const sourceKeypair = Keypair.fromSecret(factorySecret);
   const sourceAccount = await server.getAccount(sourceKeypair.publicKey());
 
+  // Contract class-based call — standard Soroban integration pattern
   const contract = new Contract(factoryContractId);
 
-  // Contract expects goal in stroops (1 XLM = 10_000_000 stroops) as i128
+  // Convert units: goal → stroops (i128), deadline → unix seconds (u64)
   const goalStroops = BigInt(Math.round(input.goalXlm * 10_000_000));
-  // Contract expects deadline as unix timestamp (seconds) as u64
   const deadlineTs = Math.floor(new Date(input.deadlineIso).getTime() / 1000);
 
   const tx = new TransactionBuilder(sourceAccount, {
     fee: "10000",
-    networkPassphrase: getNetworkPassphrase(network),
+    networkPassphrase,
   })
     .addOperation(
       contract.call(
         "create_campaign",
-        // creator: Address
         new Address(input.creatorWallet).toScVal(),
-        // token_address: Address (XLM Native Token)
-        new Address(process.env.NEXT_PUBLIC_STELLAR_TOKEN_ADDRESS || "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC").toScVal(),
-        // goal_xlm: i128 (in stroops)
+        new Address(
+          process.env.NEXT_PUBLIC_STELLAR_TOKEN_ADDRESS ||
+            "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        ).toScVal(),
         nativeToScVal(goalStroops, { type: "i128" }),
-        // deadline_ts: u64 (unix seconds)
         nativeToScVal(deadlineTs, { type: "u64" }),
       ),
     )
@@ -172,13 +122,8 @@ async function invokeFactoryCreate(
   }
 
   const txHash = send.hash;
-  const finalTx = await waitForTransaction(server, txHash);
-
-  if (finalTx.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
-    throw new Error(
-      `Soroban transaction succeeded but returned no value (hash: ${txHash})`,
-    );
-  }
+  // Use SDK-based polling — no raw fetch
+  await waitForSorobanTx(server, txHash);
 
   return {
     contractAddress: simulatedAddress,

@@ -4,7 +4,8 @@ import { useState } from "react";
 import { DonationReceipt } from "@/components/campaigns/DonationReceipt";
 import type { CampaignRow } from "@/types/supabase";
 import { isConnected, isAllowed, getAddress, signTransaction } from "@stellar/freighter-api";
-import { rpc, Contract, Address, nativeToScVal, TransactionBuilder, Networks, Transaction } from "@stellar/stellar-sdk";
+import { rpc, Contract, Address, nativeToScVal, TransactionBuilder, Transaction } from "@stellar/stellar-sdk";
+import { getRpcServer, getNetworkPassphrase, waitForSorobanTx } from "@/lib/stellar/soroban";
 import { saveContribution } from "@/app/campaigns/[slug]/actions";
 
 interface DonationModalProps {
@@ -69,9 +70,9 @@ export function DonationModal({ campaign, onClose }: DonationModalProps) {
       }
       const donorPubKey = donorPubKeyObj.address;
 
-      const rpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
-      const server = new rpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith("http://") });
-      const networkPassphrase = process.env.NEXT_PUBLIC_STELLAR_NETWORK === "PUBLIC" ? Networks.PUBLIC : Networks.TESTNET;
+      // Use shared helpers — standard Contract class-based interaction
+      const server = getRpcServer();
+      const networkPassphrase = getNetworkPassphrase();
 
       const donorAccount = await server.getAccount(donorPubKey);
       const contractId = campaign.contract_address;
@@ -114,31 +115,9 @@ export function DonationModal({ campaign, onClose }: DonationModalProps) {
          throw new Error("Failed to send: " + send.status);
       }
 
+      // Wait for confirmation using SDK server.getTransaction() — no raw fetch
       const txHash = send.hash;
-      let status = "PENDING";
-      for (let i = 0; i < 30; i++) {
-         const res = await fetch(rpcUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              jsonrpc: "2.0",
-              id: 1,
-              method: "getTransaction",
-              params: { hash: txHash }
-            })
-         });
-         
-         if (res.ok) {
-           const data = await res.json();
-           status = data?.result?.status;
-           if (status === "SUCCESS") break;
-           if (status === "FAILED") throw new Error("Transaction failed on-chain.");
-         }
-         await new Promise(r => setTimeout(r, 1000));
-      }
-      
-      if (status !== "SUCCESS") throw new Error("Transaction confirmation timed out.");
-
+      await waitForSorobanTx(server, txHash);
       await saveContribution({
         campaign_id: campaign.id,
         wallet_address: donorPubKey,
