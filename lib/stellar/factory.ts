@@ -14,6 +14,7 @@ import {
   nativeToScVal,
   scValToNative,
   rpc,
+  xdr,
 } from "@stellar/stellar-sdk";
 
 /**
@@ -47,23 +48,39 @@ async function waitForTransaction(
   server: rpc.Server,
   txHash: string,
   maxTries = 30,
-): Promise<rpc.Api.GetTransactionResponse> {
+): Promise<any> {
+  const rpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL!;
   for (let attempt = 0; attempt < maxTries; attempt += 1) {
-    const tx = await server.getTransaction(txHash);
+    // We use a raw fetch here because stellar-sdk v13 sometimes throws "Bad union switch: 4"
+    // when trying to parse TXMETA_V3 in the resultMetaXdr field of a successful transaction.
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTransaction",
+        params: { hash: txHash }
+      }),
+    });
+    
+    if (!res.ok) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+    
+    const data = await res.json();
+    const status = data?.result?.status;
 
-    if (tx.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-      return tx;
+    if (status === "SUCCESS") {
+      return data.result;
     }
 
-    if (
-      tx.status === rpc.Api.GetTransactionStatus.FAILED ||
-      tx.status === rpc.Api.GetTransactionStatus.NOT_FOUND
-    ) {
-      throw new Error(
-        `Soroban transaction failed with status: ${tx.status} (hash: ${txHash})`,
-      );
+    if (status === "FAILED") {
+      throw new Error(`Soroban transaction failed on-chain (hash: ${txHash})`);
     }
 
+    // NOT_FOUND or other statuses -> wait and retry
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
@@ -134,6 +151,11 @@ async function invokeFactoryCreate(
     throw new Error(`Soroban simulation failed: ${detail}`);
   }
 
+  let simulatedAddress = "";
+  if (rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
+    simulatedAddress = String(scValToNative(sim.result.retval));
+  }
+
   // Assemble (adds resource fees from simulation) then sign
   const prepared = rpc.assembleTransaction(tx, sim).build();
   prepared.sign(sourceKeypair);
@@ -152,20 +174,16 @@ async function invokeFactoryCreate(
   const txHash = send.hash;
   const finalTx = await waitForTransaction(server, txHash);
 
-  if (finalTx.status !== rpc.Api.GetTransactionStatus.SUCCESS || !finalTx.returnValue) {
+  if (finalTx.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
     throw new Error(
       `Soroban transaction succeeded but returned no value (hash: ${txHash})`,
     );
   }
 
-  // The factory contract returns the new campaign's Address
-  const campaignAddressNative = scValToNative(finalTx.returnValue);
-  const contractAddress = String(campaignAddressNative);
-
   return {
-    contractAddress,
+    contractAddress: simulatedAddress,
     factoryTxHash: txHash,
-    campaignId: contractAddress,
+    campaignId: simulatedAddress,
     mode: "live",
   };
 }

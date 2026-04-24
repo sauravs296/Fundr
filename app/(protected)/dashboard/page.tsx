@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { StatCard } from "@/components/dashboard/StatCard";
-import WalletCard from "@/components/wallet/WalletCard";
+
 import { createClient } from "@/lib/supabase/server";
 import type { CampaignRow, ProfileRow } from "@/types/supabase";
 
@@ -33,7 +33,7 @@ export default async function DashboardPage() {
       .maybeSingle(),
     supabase
       .from("campaigns")
-      .select("id, title, status, goal_xlm")
+      .select("id, title, status, goal_xlm, contract_address, factory_tx_hash")
       .eq("creator_id", userId ?? "")
       .order("created_at", { ascending: false }),
   ]);
@@ -43,7 +43,7 @@ export default async function DashboardPage() {
     "role" | "total_raised_xlm" | "wallet_address"
   > | null;
   const campaigns = campaignsResponse.data as Array<
-    Pick<CampaignRow, "id" | "title" | "status" | "goal_xlm">
+    Pick<CampaignRow, "id" | "title" | "status" | "goal_xlm" | "contract_address" | "factory_tx_hash">
   > | null;
 
   const campaignIds = (campaigns ?? []).map((campaign) => campaign.id);
@@ -93,6 +93,7 @@ export default async function DashboardPage() {
     status: campaign.status,
     raised: formatXlm(raisedByCampaign[campaign.id] ?? 0),
     goal: formatXlm(Number(campaign.goal_xlm ?? 0)),
+    contractAddress: campaign.contract_address ?? undefined,
   }));
 
   const isAdminPanelView = isDedicatedAdmin || profile?.role === "admin";
@@ -117,12 +118,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      {/* Fixed top-right wallet widget — rendered outside the content flow */}
-      <WalletCard
-        role={walletRole}
-        serverAmount={walletAmount}
-        savedWallet={profile?.wallet_address ?? null}
-      />
+
 
       <section className="flex flex-wrap items-end justify-between gap-4">
         <div>

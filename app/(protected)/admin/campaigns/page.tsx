@@ -1,6 +1,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAdminPanelAccess } from "@/lib/auth/admin";
+import { VerifyOnChain } from "@/components/ui/VerifyOnChain";
+
 
 async function updateCampaignModeration(formData: FormData) {
   "use server";
@@ -67,10 +69,16 @@ export default async function AdminCampaignsPage({
 
   const { supabase }: any = await requireAdminPanelAccess();
 
-  const { data: campaigns = [] }: any = await supabase
+  const { createClient } = await import("@supabase/supabase-js");
+  const serviceRoleClient = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+  const { data: campaigns = [] }: any = await serviceRoleClient
     .from("campaigns")
     .select(
-      "id, title, slug, status, category, is_flagged, flag_reason, is_featured, official_link, proof_document_url, creator_id, created_at",
+      "id, title, slug, status, category, is_flagged, flag_reason, is_featured, official_link, proof_document_url, creator_id, created_at, contract_address, factory_tx_hash",
     )
     .order("created_at", { ascending: false });
 
@@ -148,6 +156,12 @@ export default async function AdminCampaignsPage({
                   <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs font-semibold uppercase tracking-wide">
                     {campaign.is_featured ? "Featured" : "Normal"}
                   </span>
+                  {campaign.contract_address ? (
+                    <VerifyOnChain value={campaign.contract_address} label="Contract ↗" />
+                  ) : null}
+                  {campaign.factory_tx_hash ? (
+                    <VerifyOnChain value={campaign.factory_tx_hash} label="Factory Tx ↗" />
+                  ) : null}
                 </div>
               </div>
 
