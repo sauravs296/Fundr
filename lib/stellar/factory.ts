@@ -113,8 +113,10 @@ async function invokeFactoryCreate(
     .addOperation(
       contract.call(
         "create_campaign",
-        // creator: Address (Stellar wallet, NOT a Supabase UUID)
+        // creator: Address
         new Address(input.creatorWallet).toScVal(),
+        // token_address: Address (XLM Native Token)
+        new Address(process.env.NEXT_PUBLIC_STELLAR_TOKEN_ADDRESS || "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC").toScVal(),
         // goal_xlm: i128 (in stroops)
         nativeToScVal(goalStroops, { type: "i128" }),
         // deadline_ts: u64 (unix seconds)
@@ -143,7 +145,7 @@ async function invokeFactoryCreate(
   if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
     throw new Error(
       `Soroban sendTransaction failed with status "${send.status}": ` +
-        JSON.stringify((send as any).errorResult ?? send),
+        JSON.stringify((send as unknown as Record<string, unknown>).errorResult ?? send),
     );
   }
 
@@ -156,15 +158,14 @@ async function invokeFactoryCreate(
     );
   }
 
-  // The factory contract returns the new campaign's u64 sequence ID
-  const campaignIdNative = scValToNative(finalTx.returnValue);
-  const campaignId = String(campaignIdNative);
+  // The factory contract returns the new campaign's Address
+  const campaignAddressNative = scValToNative(finalTx.returnValue);
+  const contractAddress = String(campaignAddressNative);
 
   return {
-    // Composite address: which factory + which slot
-    contractAddress: `${factoryContractId}:${campaignId}`,
+    contractAddress,
     factoryTxHash: txHash,
-    campaignId,
+    campaignId: contractAddress,
     mode: "live",
   };
 }
