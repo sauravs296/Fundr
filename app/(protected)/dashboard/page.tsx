@@ -1,7 +1,8 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { StatCard } from "@/components/dashboard/StatCard";
-import WalletCard from "@/components/wallet/WalletCard";
+
 import { createClient } from "@/lib/supabase/server";
 import type { CampaignRow, ProfileRow } from "@/types/supabase";
 
@@ -33,7 +34,7 @@ export default async function DashboardPage() {
       .maybeSingle(),
     supabase
       .from("campaigns")
-      .select("id, title, status, goal_xlm")
+      .select("id, title, status, goal_xlm, contract_address, factory_tx_hash")
       .eq("creator_id", userId ?? "")
       .order("created_at", { ascending: false }),
   ]);
@@ -42,8 +43,15 @@ export default async function DashboardPage() {
     ProfileRow,
     "role" | "total_raised_xlm" | "wallet_address"
   > | null;
+
+  const isAdminPanelView = isDedicatedAdmin || profile?.role === "admin";
+  
+  if (isAdminPanelView) {
+    redirect("/admin");
+  }
+
   const campaigns = campaignsResponse.data as Array<
-    Pick<CampaignRow, "id" | "title" | "status" | "goal_xlm">
+    Pick<CampaignRow, "id" | "title" | "status" | "goal_xlm" | "contract_address" | "factory_tx_hash">
   > | null;
 
   const campaignIds = (campaigns ?? []).map((campaign) => campaign.id);
@@ -56,14 +64,6 @@ export default async function DashboardPage() {
         .eq("status", "confirmed")
     : { data: [] as Array<{ campaign_id: string; wallet_address: string; amount_xlm: number }> };
 
-  // Total funded BY this user (as a funder on other campaigns)
-  const { data: myContributions } = userId
-    ? await supabase
-        .from("contributions")
-        .select("amount_xlm")
-        .eq("wallet_address", profile?.wallet_address ?? "")
-        .eq("status", "confirmed")
-    : { data: [] as Array<{ amount_xlm: number }> };
 
   const uniqueBackers = new Set((contributions ?? []).map((row) => row.wallet_address)).size;
   const activeCampaigns = (campaigns ?? []).filter((campaign) => campaign.status === "active").length;
@@ -81,11 +81,6 @@ export default async function DashboardPage() {
     0,
   );
 
-  // Sum of what this user has personally contributed (as a funder)
-  const totalFunded = (myContributions ?? []).reduce(
-    (sum, row) => sum + Number(row.amount_xlm ?? 0),
-    0,
-  );
 
   const campaignRows = (campaigns ?? []).map((campaign) => ({
     id: campaign.id,
@@ -93,50 +88,27 @@ export default async function DashboardPage() {
     status: campaign.status,
     raised: formatXlm(raisedByCampaign[campaign.id] ?? 0),
     goal: formatXlm(Number(campaign.goal_xlm ?? 0)),
+    contractAddress: campaign.contract_address ?? undefined,
   }));
 
-  const isAdminPanelView = isDedicatedAdmin || profile?.role === "admin";
-  const isFundraiser = profile?.role === "creator" || isAdminPanelView;
-  const walletRole: "funder" | "fundraiser" | "admin" = isAdminPanelView
-    ? "admin"
-    : isFundraiser
-      ? "fundraiser"
-      : "funder";
-
-  // The server-side amount shown in the wallet card
-  const walletAmount = isAdminPanelView
-    ? totalRaised          // admin: platform total
-    : isFundraiser
-      ? totalRaised        // fundraiser: total received across their campaigns
-      : totalFunded;       // funder: total they've contributed
-
-  const dashboardLabel = isAdminPanelView ? "Admin Dashboard" : "Creator Dashboard";
-  const dashboardSubtitle = isAdminPanelView
-    ? "Track platform activity and review campaign and fundraiser health from your admin account."
-    : "Track campaign performance and manage fundraising activity from your account.";
+  const dashboardLabel = "Creator Dashboard";
+  const dashboardSubtitle = "Track campaign performance and manage fundraising activity from your account.";
 
   return (
     <div className="space-y-8">
-      {/* Fixed top-right wallet widget — rendered outside the content flow */}
-      <WalletCard
-        role={walletRole}
-        serverAmount={walletAmount}
-        savedWallet={profile?.wallet_address ?? null}
-      />
+
 
       <section className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-4xl font-bold">{dashboardLabel}</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">{dashboardSubtitle}</p>
         </div>
-        {!isAdminPanelView ? (
           <Link
             href="/dashboard/performance"
             className="rounded-full border border-[var(--brand)] px-4 py-2 text-sm font-semibold text-[var(--brand)] transition hover:bg-[var(--brand)] hover:text-white"
           >
             Campaign Performance
           </Link>
-        ) : null}
       </section>
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

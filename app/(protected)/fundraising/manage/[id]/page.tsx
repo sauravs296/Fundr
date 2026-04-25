@@ -3,6 +3,9 @@ import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireCampaignOwnerAccess } from "@/lib/auth/creator";
+import { VerifyOnChain } from "@/components/ui/VerifyOnChain";
+import { WithdrawButton } from "@/components/campaigns/WithdrawButton";
+
 
 const CAMPAIGN_MEDIA_BUCKET = "campaign-media";
 const CAMPAIGN_PROOF_BUCKET = "campaign-proofs";
@@ -362,7 +365,7 @@ export default async function ManageCampaignPage({
   const { data: campaignFull }: any = await supabase
     .from("campaigns")
     .select(
-      "id, title, short_description, description, category, goal_xlm, deadline, status, image_url, gallery_urls, official_link, proof_document_url, created_at",
+      "id, title, short_description, description, category, goal_xlm, deadline, status, image_url, gallery_urls, official_link, proof_document_url, created_at, contract_address, factory_tx_hash",
     )
     .eq("id", id)
     .maybeSingle();
@@ -441,6 +444,42 @@ export default async function ManageCampaignPage({
                                         ? "Could not delete campaign."
                                         : "An error occurred."}
         </p>
+      ) : null}
+
+      {/* On-chain Info */}
+      {(campaignFull.contract_address || campaignFull.factory_tx_hash) ? (
+        <section className="rounded-2xl border border-[var(--brand)]/30 bg-[var(--brand)]/5 p-6">
+          <h2 className="text-xl font-bold text-[var(--brand)]">On-Chain Info</h2>
+          <p className="mt-1 text-sm text-[var(--muted)]">Verify this campaign&apos;s smart contract and creation transaction on the Stellar blockchain.</p>
+          <div className="mt-4 flex flex-wrap gap-3">
+            {campaignFull.contract_address ? (
+              <VerifyOnChain
+                value={campaignFull.contract_address}
+                label="View Campaign Contract ↗"
+                variant="button"
+              />
+            ) : null}
+            {campaignFull.factory_tx_hash ? (
+              <VerifyOnChain
+                value={campaignFull.factory_tx_hash}
+                label="View Factory Transaction ↗"
+                variant="button"
+              />
+            ) : null}
+          </div>
+          {campaignFull.contract_address ? (
+            <p className="mt-3 break-all font-mono text-xs text-[var(--muted)]">
+              Contract: {campaignFull.contract_address}
+            </p>
+          ) : null}
+
+          {campaignFull.contract_address && (
+            <WithdrawButton 
+              contractId={campaignFull.contract_address} 
+              deadline={campaignFull.deadline} 
+            />
+          )}
+        </section>
       ) : null}
 
       <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-6">

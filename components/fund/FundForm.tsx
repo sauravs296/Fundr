@@ -2,11 +2,16 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { WalletButton } from "@/components/wallet/WalletButton";
+import { isConnected, isAllowed, getAddress, signTransaction } from "@stellar/freighter-api";
+import { rpc, Contract, Address, nativeToScVal, TransactionBuilder, Transaction } from "@stellar/stellar-sdk";
+import { getRpcServer, getNetworkPassphrase, waitForSorobanTx } from "@/lib/stellar/soroban";
+import { saveContribution } from "@/app/campaigns/[slug]/actions";
+import { VerifyOnChain } from "@/components/ui/VerifyOnChain";
 
 export interface CampaignOption {
   id: string;
   title: string;
+  contract_address?: string | null;
   location: string;
   raised: number;
   progress: number;
@@ -26,6 +31,8 @@ export function FundForm({ campaigns, preselectedTitle }: FundFormProps) {
   const [fundAmount, setFundAmount] = useState("1");
   const [donorName, setDonorName] = useState("");
   const [donorEmail, setDonorEmail] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [txHash, setTxHash] = useState<string | null>(null);
 
   const minimumAmount = 1;
   const requiresIdentity = !isAnonymous;
@@ -36,9 +43,109 @@ export function FundForm({ campaigns, preselectedTitle }: FundFormProps) {
 
   const selectedCampaignLabel = selectedCampaign || "Choose a campaign";
 
-  const handleContinue = () => {
-    // Ready for contract execution
-    alert("Smart contract execution will happen here");
+  const handleContinue = async () => {
+    if (!selectedCampaignMeta || !selectedCampaignMeta.contract_address) {
+      alert("Selected campaign does not have a valid smart contract address.");
+      return;
+    }
+
+    if (!fundAmount || Number(fundAmount) < minimumAmount) {
+      alert(`Amount must be at least ${minimumAmount} XLM`);
+      return;
+    }
+
+    if (!isAnonymous && !donorName.trim()) {
+      alert("Please enter your name");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setTxHash(null);
+
+    try {
+      if (!(await isConnected())) {
+        alert("Freighter is not installed.");
+        setIsSubmitting(false);
+        return;
+      }
+      if (!(await isAllowed())) {
+        alert("Please authorize Fundr in Freighter.");
+        setIsSubmitting(false);
+        return;
+      }
+      const donorPubKeyObj = await getAddress();
+      if (!donorPubKeyObj || !donorPubKeyObj.address) {
+         alert("Could not get wallet address.");
+         setIsSubmitting(false);
+         return;
+      }
+      const donorPubKey = donorPubKeyObj.address;
+
+      // Use shared helpers — standard Contract class-based interaction
+      const server = getRpcServer();
+      const networkPassphrase = getNetworkPassphrase();
+
+      const donorAccount = await server.getAccount(donorPubKey);
+      const contract = new Contract(selectedCampaignMeta.contract_address);
+
+      const amountStroops = BigInt(Math.round(Number(fundAmount) * 10_000_000));
+
+      const tx = new TransactionBuilder(donorAccount, {
+        fee: "10000",
+        networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            "pledge",
+            new Address(donorPubKey).toScVal(),
+            nativeToScVal(amountStroops, { type: "i128" })
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      const sim = await server.simulateTransaction(tx);
+      if (rpc.Api.isSimulationError(sim)) {
+         throw new Error("Simulation failed: " + (typeof sim.error === "string" ? sim.error : "unknown error"));
+      }
+
+      const prepared = rpc.assembleTransaction(tx, sim).build();
+      const signedXdr = await signTransaction(prepared.toXDR(), { networkPassphrase });
+      
+      if (signedXdr.error) {
+        throw new Error(signedXdr.error);
+      }
+
+      const signedTx = new Transaction(signedXdr.signedTxXdr, networkPassphrase);
+
+      const send = await server.sendTransaction(signedTx);
+      if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
+         throw new Error("Failed to send: " + send.status);
+      }
+
+      // Wait for confirmation using SDK server.getTransaction() — no raw fetch
+      const hash = send.hash;
+      await waitForSorobanTx(server, hash);
+
+      await saveContribution({
+        campaign_id: selectedCampaignMeta.id,
+        wallet_address: donorPubKey,
+        amount_xlm: Number(fundAmount),
+        donor_name: isAnonymous ? undefined : donorName,
+        donor_message: undefined, // Message not supported in this form
+        is_anonymous: isAnonymous,
+        tx_hash: hash,
+      });
+
+      setTxHash(hash);
+      alert("Donation successful! Thank you for your contribution.");
+      setFundAmount("1");
+    } catch (err: any) {
+      console.error(err);
+      alert("Donation failed: " + (err.message || "Unknown error"));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -47,10 +154,7 @@ export function FundForm({ campaigns, preselectedTitle }: FundFormProps) {
         <div className="flex flex-col gap-4 border-b border-[var(--line)] pb-4 md:flex-row md:items-start md:justify-between">
           <div>
             <h2 className="text-2xl font-bold tracking-tight md:text-[1.75rem]">Fund a campaign</h2>
-            <p className="mt-1 text-sm text-[var(--muted)]">Use a connected wallet or continue anonymously.</p>
-          </div>
-          <div className="shrink-0">
-            <WalletButton />
+            <p className="mt-1 text-sm text-[var(--muted)]">Make sure your wallet is connected via the widget above, or continue anonymously.</p>
           </div>
         </div>
 
@@ -139,13 +243,29 @@ export function FundForm({ campaigns, preselectedTitle }: FundFormProps) {
             </p>
           )}
 
-          <button
-            type="button"
-            onClick={handleContinue}
-            className="w-full rounded-xl bg-[var(--brand)] px-4 py-3.5 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(15,139,128,0.22)] transition hover:bg-[var(--brand-strong)]"
-          >
-            Continue to Donate
-          </button>
+          <div className="space-y-4">
+            {selectedCampaignMeta && selectedCampaignMeta.progress >= 100 ? (
+              <div className="w-full rounded-xl bg-amber-50 border border-amber-200 px-4 py-3.5 text-center text-sm font-semibold text-amber-700">
+                This campaign is fully funded! No further donations are accepted.
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleContinue}
+                disabled={isSubmitting}
+                className="w-full rounded-xl bg-[var(--brand)] px-4 py-3.5 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(15,139,128,0.22)] transition hover:bg-[var(--brand-strong)] disabled:opacity-60"
+              >
+                {isSubmitting ? "Processing Transaction..." : "Continue to Donate"}
+              </button>
+            )}
+            
+            {txHash && (
+              <div className="flex items-center justify-center gap-2 rounded-xl bg-emerald-50 py-3">
+                <span className="text-sm font-semibold text-emerald-800">Success!</span>
+                <VerifyOnChain value={txHash} label="Verify Transaction ↗" />
+              </div>
+            )}
+          </div>
         </div>
       </form>
 

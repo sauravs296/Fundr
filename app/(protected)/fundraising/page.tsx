@@ -72,10 +72,35 @@ async function createDraftCampaign(formData: FormData) {
     redirect("/dashboard");
   }
 
-  // wallet_address is required for the Soroban `creator.require_auth()` call
-  const creatorWallet: string | null = profile?.wallet_address ?? null;
+  // wallet_address is required for the Soroban `creator.require_auth()` call.
+  // Accept either the address already saved in the profile, OR the one injected
+  // by the client form from the currently-connected Freighter extension.
+  const freighterWallet = String(formData.get("freighter_wallet") ?? "").trim();
+  const creatorWallet: string | null = profile?.wallet_address ?? (freighterWallet || null);
   if (!creatorWallet) {
     redirect("/fundraising?error=no_wallet");
+  }
+
+  // Auto-save the wallet to the profile if it wasn't stored yet
+  if (!profile?.wallet_address && creatorWallet) {
+    await supabase
+      .from("profiles")
+      .update({ wallet_address: creatorWallet })
+      .eq("id", user.id);
+  }
+
+  // ── Active campaign limit: max 3 campaigns with deadline not yet passed ──
+  const MAX_ACTIVE_CAMPAIGNS = 3;
+  const now = new Date().toISOString();
+  const { count: activeCampaignCount } = await supabase
+    .from("campaigns")
+    .select("id", { count: "exact", head: true })
+    .eq("creator_id", user.id)
+    .eq("status", "active")
+    .gt("deadline", now);
+
+  if ((activeCampaignCount ?? 0) >= MAX_ACTIVE_CAMPAIGNS) {
+    redirect("/fundraising?error=campaign_limit");
   }
 
   const title = String(formData.get("title") ?? "").trim();
@@ -180,10 +205,11 @@ async function createDraftCampaign(formData: FormData) {
       deadlineIso,
       title,
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error("[Fundr] on-chain campaign creation failed:", err);
     await cleanupUploadedFiles(supabase, uploadedImagePaths, proofDocumentPath);
-    redirect("/fundraising?error=onchain");
+    const msg = err.message ? encodeURIComponent(err.message) : "onchain";
+    redirect(`/fundraising?error=${msg}`);
   }
 
   const { error }: any = await supabase.from("campaigns").insert({
@@ -201,7 +227,7 @@ async function createDraftCampaign(formData: FormData) {
     proof_document_url: proofDocumentPath,
     goal_xlm: goal,
     deadline: deadlineIso,
-    status: "draft",
+    status: "active",
   });
 
   if (error) {

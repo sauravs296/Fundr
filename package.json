@@ -6,14 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint .",
     "test:e2e": "playwright test",
     "deploy:stellar": "powershell -ExecutionPolicy Bypass -File ./scripts/stellar/deploy.ps1",
     "health:stellar": "powershell -ExecutionPolicy Bypass -File ./scripts/stellar/health-check.ps1"
   },
   "dependencies": {
     "@stellar/freighter-api": "^6.0.1",
-    "@stellar/stellar-sdk": "^13.3.0",
+    "@stellar/stellar-sdk": "^15.0.1",
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.104.0",
     "next": "16.2.4",

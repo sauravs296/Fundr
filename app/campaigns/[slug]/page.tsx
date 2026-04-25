@@ -6,6 +6,8 @@ import { CampaignImageCarousel } from "@/components/campaigns/CampaignImageCarou
 import { DonationPanel } from "@/components/campaigns/DonationPanel";
 import { RecentDonors } from "@/components/campaigns/RecentDonors";
 import { CommentsSection } from "@/components/campaigns/CommentsSection";
+import { VerifyOnChain } from "@/components/ui/VerifyOnChain";
+
 
 export default async function CampaignDetailPage({
   params,
@@ -96,10 +98,17 @@ export default async function CampaignDetailPage({
                 ) : (
                   <div className="h-12 w-12 rounded-full bg-[var(--brand-soft)]" />
                 )}
-                <div>
+                <div className="flex-1">
                   <p className="font-semibold">{creator?.full_name || "Anonymous Creator"}</p>
                   <p className="text-sm text-[var(--muted)]">@{creator?.username || "unknown"}</p>
                 </div>
+                {campaign.contract_address ? (
+                  <VerifyOnChain
+                    value={campaign.contract_address}
+                    label="Verify Contract ↗"
+                    variant="pill"
+                  />
+                ) : null}
               </div>
             </div>
 

@@ -9,12 +9,12 @@ import {
   Address,
   Contract,
   Keypair,
-  Networks,
   TransactionBuilder,
   nativeToScVal,
   scValToNative,
   rpc,
 } from "@stellar/stellar-sdk";
+import { getRpcServer, getNetworkPassphrase, waitForSorobanTx } from "@/lib/stellar/soroban";
 
 /**
  * Input for registering a campaign on-chain via the CrowdfundFactory contract.
@@ -39,51 +39,18 @@ export interface OnChainCampaignResult {
   mode: "live";
 }
 
-function getNetworkPassphrase(network: string): string {
-  return network === "PUBLIC" ? Networks.PUBLIC : Networks.TESTNET;
-}
 
-async function waitForTransaction(
-  server: rpc.Server,
-  txHash: string,
-  maxTries = 30,
-): Promise<rpc.Api.GetTransactionResponse> {
-  for (let attempt = 0; attempt < maxTries; attempt += 1) {
-    const tx = await server.getTransaction(txHash);
-
-    if (tx.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-      return tx;
-    }
-
-    if (
-      tx.status === rpc.Api.GetTransactionStatus.FAILED ||
-      tx.status === rpc.Api.GetTransactionStatus.NOT_FOUND
-    ) {
-      throw new Error(
-        `Soroban transaction failed with status: ${tx.status} (hash: ${txHash})`,
-      );
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-
-  throw new Error(
-    `Soroban transaction confirmation timed out after ${maxTries} attempts (hash: ${txHash})`,
-  );
-}
 
 async function invokeFactoryCreate(
   input: CreateOnChainCampaignInput,
 ): Promise<OnChainCampaignResult> {
-  const rpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL;
   const factoryContractId = process.env.NEXT_PUBLIC_FACTORY_CONTRACT_ID;
   const factorySecret = process.env.STELLAR_FACTORY_SECRET_KEY;
-  const network = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "TESTNET").toUpperCase();
 
-  if (!rpcUrl || !factoryContractId || !factorySecret) {
+  if (!factoryContractId || !factorySecret) {
     throw new Error(
       "Missing Soroban env vars. Required: " +
-        "NEXT_PUBLIC_SOROBAN_RPC_URL, NEXT_PUBLIC_FACTORY_CONTRACT_ID, STELLAR_FACTORY_SECRET_KEY",
+        "NEXT_PUBLIC_FACTORY_CONTRACT_ID, STELLAR_FACTORY_SECRET_KEY",
     );
   }
 
@@ -94,79 +61,168 @@ async function invokeFactoryCreate(
     );
   }
 
-  // rpc.Server is the v13 equivalent of SorobanRpc.Server
-  const server = new rpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith("http://") });
+  // Use shared helpers — Contract class-based pattern throughout
+  const server = getRpcServer();
+  const networkPassphrase = getNetworkPassphrase();
   const sourceKeypair = Keypair.fromSecret(factorySecret);
   const sourceAccount = await server.getAccount(sourceKeypair.publicKey());
 
+  // Contract class-based call — standard Soroban integration pattern
   const contract = new Contract(factoryContractId);
 
-  // Contract expects goal in stroops (1 XLM = 10_000_000 stroops) as i128
+  // goal in stroops (i128) — campaign/pledge() calls token.transfer() in stroops
+  // deadline in unix seconds (u64)
   const goalStroops = BigInt(Math.round(input.goalXlm * 10_000_000));
-  // Contract expects deadline as unix timestamp (seconds) as u64
-  const deadlineTs = Math.floor(new Date(input.deadlineIso).getTime() / 1000);
+  const deadlineTs  = Math.floor(new Date(input.deadlineIso).getTime() / 1000);
 
-  const tx = new TransactionBuilder(sourceAccount, {
-    fee: "10000",
-    networkPassphrase: getNetworkPassphrase(network),
-  })
-    .addOperation(
-      contract.call(
-        "create_campaign",
-        // creator: Address
-        new Address(input.creatorWallet).toScVal(),
-        // token_address: Address (XLM Native Token)
-        new Address(process.env.NEXT_PUBLIC_STELLAR_TOKEN_ADDRESS || "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC").toScVal(),
-        // goal_xlm: i128 (in stroops)
-        nativeToScVal(goalStroops, { type: "i128" }),
-        // deadline_ts: u64 (unix seconds)
-        nativeToScVal(deadlineTs, { type: "u64" }),
-      ),
-    )
-    .setTimeout(120)
-    .build();
+  console.log("[factory] create_campaign args:", {
+    creator:    input.creatorWallet,
+    goal:       goalStroops.toString(),
+    deadlineTs,
+    now:        Math.floor(Date.now() / 1000),
+    deltaS:     deadlineTs - Math.floor(Date.now() / 1000),
+  });
 
-  // Simulate first to get resource footprint
-  const sim = await server.simulateTransaction(tx);
+  const buildTx = (acct: typeof sourceAccount) =>
+    new TransactionBuilder(acct, { fee: "100000", networkPassphrase })
+      .addOperation(
+        contract.call(
+          "create_campaign",
+          new Address(input.creatorWallet).toScVal(),
+          new Address(
+            process.env.NEXT_PUBLIC_STELLAR_TOKEN_ADDRESS ||
+              "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+          ).toScVal(),
+          nativeToScVal(goalStroops, { type: "i128" }),
+          nativeToScVal(deadlineTs,  { type: "u64"  }),
+        ),
+      )
+      .setTimeout(300)
+      .build();
+
+  let tx = buildTx(sourceAccount);
+
+  // ── Simulate (first pass) ─────────────────────────────────────────────────
+  let sim = await server.simulateTransaction(tx);
+  console.log("[factory] simulation type — isError:", rpc.Api.isSimulationError(sim),
+    "| isSuccess:", rpc.Api.isSimulationSuccess(sim),
+    "| isRestore:", rpc.Api.isSimulationRestore(sim));
+
+  // ── Handle SimulationRestore ──────────────────────────────────────────────
+  // deploy_v2() inside the factory may require expired ledger entries to be
+  // restored before the call can succeed. If so, build + submit a restore tx
+  // first, then re-simulate the original call.
+  if (rpc.Api.isSimulationRestore(sim)) {
+    console.log("[factory] Ledger restore required — submitting restore transaction…");
+    const restoreSim = sim as rpc.Api.SimulateTransactionRestoreResponse;
+
+    const restoreTx = rpc.assembleTransaction(tx, restoreSim).build();
+    restoreTx.sign(sourceKeypair);
+
+    const restoreSend = await server.sendTransaction(restoreTx);
+    if (restoreSend.status !== "PENDING" && restoreSend.status !== "DUPLICATE") {
+      throw new Error(
+        `Restore transaction failed with status "${restoreSend.status}": ` +
+        JSON.stringify((restoreSend as any).errorResult ?? restoreSend),
+      );
+    }
+    await waitForSorobanTx(server, restoreSend.hash);
+    console.log("[factory] Restore complete — re-fetching account and re-simulating…");
+
+    // Re-fetch account (sequence number has advanced) then re-simulate
+    const freshAccount = await server.getAccount(sourceKeypair.publicKey());
+    tx  = buildTx(freshAccount);
+    sim = await server.simulateTransaction(tx);
+    console.log("[factory] Re-simulation — isError:", rpc.Api.isSimulationError(sim),
+      "| isSuccess:", rpc.Api.isSimulationSuccess(sim));
+  }
+
+  // ── Check for simulation error ────────────────────────────────────────────
   if (rpc.Api.isSimulationError(sim)) {
-    const detail =
-      typeof sim.error === "string" ? sim.error : JSON.stringify(sim.error ?? "unknown");
+    const detail = typeof sim.error === "string"
+      ? sim.error
+      : JSON.stringify(sim.error ?? "unknown");
+    console.error("[factory] Simulation error detail:", detail);
     throw new Error(`Soroban simulation failed: ${detail}`);
   }
 
-  // Assemble (adds resource fees from simulation) then sign
+  // ── Read simulated return value safely ────────────────────────────────────
+  // Check ScVal type via switch().name (stable string enum) BEFORE calling
+  // scValToNative to avoid "Bad union switch: N" from js-xdr.
+  let simulatedAddress = "";
+  if (rpc.Api.isSimulationSuccess(sim) && sim.result?.retval) {
+    const retval = sim.result.retval;
+    try {
+      const switchName: string = retval.switch().name;
+      console.log("[factory] retval ScVal type:", switchName, "(value:", retval.switch().value, ")");
+
+      if (switchName === "scvAddress") {
+        simulatedAddress = String(scValToNative(retval));
+        console.log("[factory] Simulated campaign address:", simulatedAddress);
+      } else if (switchName === "scvError" || switchName === "scvI32" || switchName === "scvU32") {
+        let errCode: unknown;
+        try {
+          errCode = switchName === "scvError"
+            ? String(retval.error()?.code)
+            : scValToNative(retval);
+        } catch { errCode = "unknown"; }
+        console.error("[factory] Contract returned error ScVal:", switchName, errCode);
+        throw new Error(
+          `Contract returned an error during simulation (${switchName}, code: ${errCode}). ` +
+          `Check server logs for the ledger timestamp vs deadline timestamp.`
+        );
+      } else {
+        console.warn("[factory] Unexpected retval ScVal type:", switchName, "— will read from confirmed tx.");
+      }
+    } catch (scErr: any) {
+      if (scErr.message?.startsWith("Contract returned an error")) throw scErr;
+      console.warn("[factory] retval parse failed:", scErr.message, "— will read address from confirmed tx.");
+    }
+  }
+
+  // Assemble (injects resource fees + footprint from simulation) then sign
   const prepared = rpc.assembleTransaction(tx, sim).build();
   prepared.sign(sourceKeypair);
 
-  // Submit the signed transaction
   const send = await server.sendTransaction(prepared);
+  console.log("[factory] sendTransaction status:", send.status);
 
-  // In SDK v13 the status is a plain string: "PENDING" | "DUPLICATE" | "TRY_AGAIN_LATER" | "ERROR"
   if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
     throw new Error(
       `Soroban sendTransaction failed with status "${send.status}": ` +
-        JSON.stringify((send as unknown as Record<string, unknown>).errorResult ?? send),
+      JSON.stringify((send as any).errorResult ?? send),
     );
   }
 
   const txHash = send.hash;
-  const finalTx = await waitForTransaction(server, txHash);
+  const confirmedTx = await waitForSorobanTx(server, txHash);
+  console.log("[factory] Transaction confirmed:", txHash);
 
-  if (finalTx.status !== rpc.Api.GetTransactionStatus.SUCCESS || !finalTx.returnValue) {
-    throw new Error(
-      `Soroban transaction succeeded but returned no value (hash: ${txHash})`,
-    );
+  // Read address from confirmed tx if simulation didn't give it
+  if (!simulatedAddress || !simulatedAddress.startsWith("C")) {
+    try {
+      const txResult = confirmedTx as rpc.Api.GetSuccessfulTransactionResponse;
+      const returnVal = txResult.returnValue;
+      if (returnVal && returnVal.switch().name === "scvAddress") {
+        const decoded = String(scValToNative(returnVal));
+        if (decoded.startsWith("C")) simulatedAddress = decoded;
+        console.log("[factory] Campaign address from confirmed tx:", simulatedAddress);
+      }
+    } catch (decodeErr) {
+      console.warn("[factory] Could not decode address from confirmed tx:", decodeErr);
+    }
   }
 
-  // The factory contract returns the new campaign's Address
-  const campaignAddressNative = scValToNative(finalTx.returnValue);
-  const contractAddress = String(campaignAddressNative);
+  if (!simulatedAddress) {
+    console.warn("[factory] Could not determine campaign contract address; using factory as fallback.");
+    simulatedAddress = factoryContractId;
+  }
 
   return {
-    contractAddress,
-    factoryTxHash: txHash,
-    campaignId: contractAddress,
-    mode: "live",
+    contractAddress: simulatedAddress,
+    factoryTxHash:   txHash,
+    campaignId:      simulatedAddress,
+    mode:            "live",
   };
 }
 
