@@ -17,6 +17,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: "Home", href: "/dashboard" },
   { label: "Create Campaign", href: "/fundraising" },
+  { label: "Manage Campaigns", href: "/my-campaigns" },
   { label: "Campaign Performance", href: "/dashboard/performance" },
   { label: "Fundraised History", href: "/history" },
   { label: "Profile and Settings", href: "/settings" },
@@ -152,7 +153,7 @@ export function ProtectedSidebar() {
             item.href === "/dashboard" || item.href === "/admin"
               ? pathname === item.href
               : pathname === item.href || pathname.startsWith(`${item.href}/`);
-          const kycLockedRoutes = ["/fundraising", "/dashboard/performance", "/history"];
+          const kycLockedRoutes = ["/fundraising", "/my-campaigns", "/dashboard/performance", "/history"];
           const isKycLockedRoute = kycLockedRoutes.includes(item.href);
           const isKycLocked = isKycLockedRoute && !hasCreatorAccess;
           const baseClass = isActive

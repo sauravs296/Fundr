@@ -89,6 +89,20 @@ async function createDraftCampaign(formData: FormData) {
       .eq("id", user.id);
   }
 
+  // ── Active campaign limit: max 3 campaigns with deadline not yet passed ──
+  const MAX_ACTIVE_CAMPAIGNS = 3;
+  const now = new Date().toISOString();
+  const { count: activeCampaignCount } = await supabase
+    .from("campaigns")
+    .select("id", { count: "exact", head: true })
+    .eq("creator_id", user.id)
+    .eq("status", "active")
+    .gt("deadline", now);
+
+  if ((activeCampaignCount ?? 0) >= MAX_ACTIVE_CAMPAIGNS) {
+    redirect("/fundraising?error=campaign_limit");
+  }
+
   const title = String(formData.get("title") ?? "").trim();
   const shortDescription = String(formData.get("short_description") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim();

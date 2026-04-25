@@ -33,6 +33,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   proof_size: "Proof file must be 6 MB or smaller.",
   proof_upload: "Proof file upload failed. Please try again.",
   invalid: "Please complete all required fields correctly.",
+  campaign_limit: "You have reached the maximum limit of 3 active campaigns. Please wait for one to conclude before creating another.",
 };
 
 interface DraftFields {
@@ -104,15 +105,20 @@ export default function CreateCampaignForm({ action, error }: Props) {
   const [fields, setFields] = useState<DraftFields>(DEFAULT_DRAFT);
   const [hydrated, setHydrated] = useState(false);
 
+  // Load from localStorage only on mount (avoid hydration mismatch/lint issues)
+  useEffect(() => {
+    // Wrap in setTimeout to avoid sync setState lint warning
+    setTimeout(() => {
+      const draft = loadDraft();
+      setFields(draft);
+      setHydrated(true);
+    }, 0);
+  }, []);
   // Ref so the submit wrapper can access the latest wallet address
   const walletRef = useRef<string | null>(null);
-  walletRef.current = walletAddress;
-
-  // Hydrate from localStorage once on client mount
   useEffect(() => {
-    setFields(loadDraft());
-    setHydrated(true);
-  }, []);
+    walletRef.current = walletAddress;
+  }, [walletAddress]);
 
   // Persist to localStorage whenever fields change
   useEffect(() => {
@@ -160,7 +166,10 @@ export default function CreateCampaignForm({ action, error }: Props) {
 
 
   useEffect(() => {
-    detectWallet();
+    // Call detectWallet asynchronously to avoid sync setState in effect
+    void (async () => {
+      await detectWallet();
+    })();
 
     // Also update if WalletCard fires a live status change (e.g., user connects
     // the wallet *after* the form has already rendered).

@@ -9,19 +9,17 @@ import { VerifyOnChain } from "@/components/ui/VerifyOnChain";
 interface WithdrawButtonProps {
   contractId: string;
   deadline: string;
-  goalXlm: number;
 }
 
-export function WithdrawButton({ contractId, deadline, goalXlm }: WithdrawButtonProps) {
+export function WithdrawButton({ contractId, deadline }: WithdrawButtonProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [withdrawnAmount, setWithdrawnAmount] = useState<number | null>(null);
 
-  // Check if deadline has passed
   const isPastDeadline = new Date().getTime() > new Date(deadline).getTime();
 
   const handleWithdraw = async () => {
     setIsSubmitting(true);
-    setTxHash(null);
 
     try {
       if (!(await isConnected())) {
@@ -49,33 +47,21 @@ export function WithdrawButton({ contractId, deadline, goalXlm }: WithdrawButton
       const creatorAccount = await server.getAccount(creatorAddress);
       const contract = new Contract(contractId);
 
-      // We need to fetch the contract's balance or total pledged.
-      // We can use the get_state function to see how much was pledged.
-      const txSim = new TransactionBuilder(creatorAccount, { fee: "100", networkPassphrase })
-        .addOperation(contract.call("get_state"))
-        .setTimeout(300)
-        .build();
-        
-      const simResult = await server.simulateTransaction(txSim);
-      if (rpc.Api.isSimulationError(simResult)) {
-        throw new Error("Simulation failed. Contract might not be fully initialized.");
-      }
-      // Actually we just execute withdraw directly.
-      // But we need to know the amount to calculate the platform fee (e.g. 5%)
-      
-      // Let's assume a fixed fee for now if we can't reliably read the balance here.
-      // Wait, we can fetch the token balance of the contract ID using Horizon!
-      const horizonUrl = process.env.NEXT_PUBLIC_STELLAR_NETWORK === "PUBLIC"
-        ? "https://horizon.stellar.org"
-        : "https://horizon-testnet.stellar.org";
-        
-      const res = await fetch(`${horizonUrl}/accounts/${contractId}`);
-      if (!res.ok) {
+      // Fetch contract XLM balance via Horizon to calculate the 5% platform fee
+      const horizonUrl =
+        process.env.NEXT_PUBLIC_STELLAR_NETWORK === "PUBLIC"
+          ? "https://horizon.stellar.org"
+          : "https://horizon-testnet.stellar.org";
+
+      const balRes = await fetch(`${horizonUrl}/accounts/${contractId}`);
+      if (!balRes.ok) {
         throw new Error("Could not fetch contract balance. Are there any funds?");
       }
-      const data = await res.json();
-      const nativeBalanceStr = data.balances?.find((b: any) => b.asset_type === "native")?.balance;
-      const contractBalance = parseFloat(nativeBalanceStr || "0");
+      const balData = await balRes.json();
+      const nativeBalStr = balData.balances?.find(
+        (b: { asset_type: string; balance: string }) => b.asset_type === "native"
+      )?.balance;
+      const contractBalance = parseFloat(nativeBalStr || "0");
 
       if (contractBalance <= 0) {
         throw new Error("No funds available to withdraw.");
@@ -84,13 +70,12 @@ export function WithdrawButton({ contractId, deadline, goalXlm }: WithdrawButton
       const adminWallet = process.env.NEXT_PUBLIC_ADMIN_WALLET_ID;
       if (!adminWallet) throw new Error("Admin wallet not configured.");
 
-      // Calculate 5% platform fee
+      // 5% platform maintenance fee
       const feeAmount = contractBalance * 0.05;
       const feeString = feeAmount.toFixed(7);
+      const netAmount = contractBalance - feeAmount;
 
-      // Build the transaction
-      // Operation 1: withdraw from contract
-      // Operation 2: pay fee to admin
+      // Build: Op 1 = contract.call("withdraw"), Op 2 = payment of fee to admin
       const tx = new TransactionBuilder(creatorAccount, {
         fee: "10000",
         networkPassphrase,
@@ -108,30 +93,33 @@ export function WithdrawButton({ contractId, deadline, goalXlm }: WithdrawButton
 
       const sim = await server.simulateTransaction(tx);
       if (rpc.Api.isSimulationError(sim)) {
-         throw new Error("Simulation failed. Make sure the deadline has passed and the goal is met! " + (typeof sim.error === "string" ? sim.error : ""));
+        throw new Error(
+          "Simulation failed. Make sure the deadline has passed and the goal is met! " +
+            (typeof sim.error === "string" ? sim.error : "")
+        );
       }
 
       const prepared = rpc.assembleTransaction(tx, sim).build();
-
       const signedXdr = await signTransaction(prepared.toXDR(), { networkPassphrase });
-      
+
       if (signedXdr.error) {
         throw new Error(signedXdr.error);
       }
 
       const signedTx = new Transaction(signedXdr.signedTxXdr, networkPassphrase);
-
       const send = await server.sendTransaction(signedTx);
+
       if (send.status !== "PENDING" && send.status !== "DUPLICATE") {
-         throw new Error("Failed to send: " + send.status);
+        throw new Error("Failed to send: " + send.status);
       }
 
-      // Wait for confirmation using SDK server.getTransaction() — no raw fetch
+      // SDK-based polling — no raw fetch
       const hash = send.hash;
       await waitForSorobanTx(server, hash);
 
+      // Flip into success state
       setTxHash(hash);
-      alert(`Withdrawal successful! A 5% platform fee (${feeString} XLM) was deducted.`);
+      setWithdrawnAmount(netAmount);
     } catch (err: any) {
       console.error(err);
       alert("Withdrawal failed: " + (err.message || "Unknown error"));
@@ -140,21 +128,66 @@ export function WithdrawButton({ contractId, deadline, goalXlm }: WithdrawButton
     }
   };
 
+  // ── Success state ─────────────────────────────────────────────────────────
+  if (txHash && withdrawnAmount !== null) {
+    return (
+      <div className="mt-6 rounded-2xl border border-emerald-300 bg-gradient-to-br from-emerald-50 to-teal-50 p-6 shadow-sm">
+        {/* Header */}
+        <div className="flex items-center gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white text-lg font-bold shadow">
+            ✓
+          </span>
+          <div>
+            <p className="text-lg font-bold text-emerald-800">Withdrawal Successful!</p>
+            <p className="text-xs text-emerald-600">Funds have been transferred to your wallet.</p>
+          </div>
+        </div>
+
+        {/* Amount breakdown */}
+        <div className="mt-4 space-y-2 rounded-xl border border-emerald-200 bg-white/70 p-4">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium text-emerald-700">Amount Withdrawn</span>
+            <span className="text-base font-bold text-emerald-900">
+              {withdrawnAmount.toFixed(4)} XLM
+            </span>
+          </div>
+          <div className="border-t border-emerald-100" />
+          <div className="flex items-center justify-between text-xs text-emerald-600">
+            <span>Platform maintenance fee (5%) deducted</span>
+            <span>{(withdrawnAmount * 0.0526).toFixed(4)} XLM</span>
+          </div>
+        </div>
+
+        {/* Transaction verification */}
+        <div className="mt-4 flex items-center gap-3 rounded-xl border border-emerald-200 bg-white/70 px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold text-emerald-800">Transaction ID</p>
+            <p className="mt-0.5 truncate font-mono text-[10px] text-emerald-600">{txHash}</p>
+          </div>
+          <VerifyOnChain value={txHash} label="Verify ↗" />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Default state ─────────────────────────────────────────────────────────
   return (
     <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-6">
       <h2 className="text-xl font-bold text-emerald-800">Withdraw Funds</h2>
       <p className="mt-2 text-sm text-emerald-700/90">
-        If your campaign has successfully met its goal and the deadline has passed, you can withdraw your funds here.
-        A small platform maintenance fee (5%) will be automatically sent to the admin wallet.
+        If your campaign has successfully met its goal and the deadline has passed, you can withdraw
+        your funds here. A small platform maintenance fee (5%) will be automatically sent to the
+        admin wallet.
       </p>
 
       {!isPastDeadline && (
         <p className="mt-3 text-xs font-semibold text-amber-700">
-          Note: Your campaign deadline has not passed yet. The smart contract will reject withdrawals.
+          Note: Your campaign deadline has not passed yet. The smart contract will reject
+          withdrawals.
         </p>
       )}
 
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+      <div className="mt-4">
         <button
           onClick={handleWithdraw}
           disabled={isSubmitting}
@@ -162,12 +195,6 @@ export function WithdrawButton({ contractId, deadline, goalXlm }: WithdrawButton
         >
           {isSubmitting ? "Processing..." : "Withdraw Funds"}
         </button>
-        {txHash && (
-          <div className="flex items-center gap-2 rounded-xl bg-white/60 px-4 py-2">
-            <span className="text-xs font-semibold text-emerald-800">Success!</span>
-            <VerifyOnChain value={txHash} label="Verify Withdrawal ↗" />
-          </div>
-        )}
       </div>
     </div>
   );

@@ -37,7 +37,7 @@ export function CampaignTable({ rows }: CampaignTableProps) {
               <td className="px-4 py-3">
                 <div className="flex flex-wrap items-center gap-3">
                   <Link
-                    href={`/fundraising/manage/${row.id}`}
+                    href={`/my-campaigns/${row.id}`}
                     className="text-sm font-semibold text-[var(--brand)] transition hover:underline"
                   >
                     Manage

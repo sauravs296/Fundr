@@ -56,14 +56,6 @@ export default async function DashboardPage() {
         .eq("status", "confirmed")
     : { data: [] as Array<{ campaign_id: string; wallet_address: string; amount_xlm: number }> };
 
-  // Total funded BY this user (as a funder on other campaigns)
-  const { data: myContributions } = userId
-    ? await supabase
-        .from("contributions")
-        .select("amount_xlm")
-        .eq("wallet_address", profile?.wallet_address ?? "")
-        .eq("status", "confirmed")
-    : { data: [] as Array<{ amount_xlm: number }> };
 
   const uniqueBackers = new Set((contributions ?? []).map((row) => row.wallet_address)).size;
   const activeCampaigns = (campaigns ?? []).filter((campaign) => campaign.status === "active").length;
@@ -81,11 +73,6 @@ export default async function DashboardPage() {
     0,
   );
 
-  // Sum of what this user has personally contributed (as a funder)
-  const totalFunded = (myContributions ?? []).reduce(
-    (sum, row) => sum + Number(row.amount_xlm ?? 0),
-    0,
-  );
 
   const campaignRows = (campaigns ?? []).map((campaign) => ({
     id: campaign.id,
@@ -97,19 +84,6 @@ export default async function DashboardPage() {
   }));
 
   const isAdminPanelView = isDedicatedAdmin || profile?.role === "admin";
-  const isFundraiser = profile?.role === "creator" || isAdminPanelView;
-  const walletRole: "funder" | "fundraiser" | "admin" = isAdminPanelView
-    ? "admin"
-    : isFundraiser
-      ? "fundraiser"
-      : "funder";
-
-  // The server-side amount shown in the wallet card
-  const walletAmount = isAdminPanelView
-    ? totalRaised          // admin: platform total
-    : isFundraiser
-      ? totalRaised        // fundraiser: total received across their campaigns
-      : totalFunded;       // funder: total they've contributed
 
   const dashboardLabel = isAdminPanelView ? "Admin Dashboard" : "Creator Dashboard";
   const dashboardSubtitle = isAdminPanelView

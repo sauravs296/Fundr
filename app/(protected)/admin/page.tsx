@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireAdminPanelAccess } from "@/lib/auth/admin";
 
 export default async function AdminPanelPage() {
-  const { supabase } = await requireAdminPanelAccess();
+  await requireAdminPanelAccess();
 
   const { createClient } = await import("@supabase/supabase-js");
   const serviceRoleClient = createClient(

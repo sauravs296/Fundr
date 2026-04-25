@@ -477,7 +477,6 @@ export default async function ManageCampaignPage({
             <WithdrawButton 
               contractId={campaignFull.contract_address} 
               deadline={campaignFull.deadline} 
-              goalXlm={Number(campaignFull.goal_xlm)} 
             />
           )}
         </section>
